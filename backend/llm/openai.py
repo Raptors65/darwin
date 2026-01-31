@@ -11,7 +11,7 @@ from llm.base import BaseLLM
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-5-nano"
 
 
 class OpenAILLM(BaseLLM):
@@ -24,7 +24,7 @@ class OpenAILLM(BaseLLM):
         """Initialize the OpenAI LLM.
 
         Args:
-            model: Model name to use. Defaults to LLM_MODEL env var or gpt-4o-mini.
+            model: Model name to use. Defaults to LLM_MODEL env var or gpt-5-nano.
             api_key: OpenAI API key. Defaults to OPENAI_API_KEY env var.
         """
         self._model = model or os.getenv("LLM_MODEL", DEFAULT_MODEL)

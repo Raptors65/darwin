@@ -38,3 +38,4 @@ class Signal(BaseModel):
     timestamp: datetime = Field(description="When the signal was posted")
     title: str | None = Field(default=None, description="Post title if available")
     author: str | None = Field(default=None, description="Author username if available")
+    product: str | None = Field(default=None, description="Product name this signal is about")

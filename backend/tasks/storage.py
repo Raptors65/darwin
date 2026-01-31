@@ -22,7 +22,10 @@ TASK_FIELDS = [
     "severity",
     "suggested_action",
     "confidence",
+    "product",
     "status",
+    "github_issue_url",
+    "github_issue_number",
     "created_at",
     "updated_at",
 ]
@@ -46,6 +49,7 @@ async def create_task(
     client: redis.Redis,
     topic_id: str,
     classification: ClassificationResult,
+    product: str | None = None,
 ) -> str:
     """Create a new task from a classification result.
 
@@ -53,6 +57,7 @@ async def create_task(
         client: Redis client.
         topic_id: The topic ID this task is for.
         classification: The classification result.
+        product: The product name this task is about.
 
     Returns:
         The new task ID.
@@ -71,6 +76,7 @@ async def create_task(
             "severity": classification.severity or "",
             "suggested_action": classification.suggested_action,
             "confidence": str(classification.confidence),
+            "product": product or "",
             "status": "open",
             "created_at": now,
             "updated_at": now,
@@ -78,10 +84,11 @@ async def create_task(
     )
 
     logger.info(
-        "Created task %s for topic %s (category: %s)",
+        "Created task %s for topic %s (category: %s, product: %s)",
         task_id,
         topic_id,
         classification.category,
+        product,
     )
 
     return task_id
@@ -178,6 +185,41 @@ async def update_task_status(
     )
 
     logger.info("Updated task %s status to %s", task_id, status)
+    return True
+
+
+async def update_task_github_issue(
+    client: redis.Redis,
+    task_id: str,
+    issue_url: str,
+    issue_number: int,
+) -> bool:
+    """Update a task with GitHub issue information.
+
+    Args:
+        client: Redis client.
+        task_id: The task ID.
+        issue_url: The GitHub issue URL.
+        issue_number: The GitHub issue number.
+
+    Returns:
+        True if updated, False if task not found.
+    """
+    key = f"{TASK_PREFIX}{task_id}"
+
+    if not await client.exists(key):
+        return False
+
+    await client.hset(
+        key,
+        mapping={
+            "github_issue_url": issue_url,
+            "github_issue_number": issue_number,
+            "updated_at": int(time.time()),
+        },
+    )
+
+    logger.info("Updated task %s with GitHub issue #%d", task_id, issue_number)
     return True
 
 

@@ -81,6 +81,7 @@ async def check_and_store_signal(
             "url": signal.url,
             "title": signal.title or "",
             "author": signal.author or "",
+            "product": signal.product or "",
             "first_seen": now,
             "last_seen": now,
             "topic_id": "",  # Will be set after clustering

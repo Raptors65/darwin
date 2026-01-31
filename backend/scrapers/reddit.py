@@ -100,6 +100,7 @@ class RedditScraper(BaseScraper):
                     timestamp=timestamp,
                     title=title,
                     author=author if author else None,
+                    product=config.product_name,
                 )
             )
 

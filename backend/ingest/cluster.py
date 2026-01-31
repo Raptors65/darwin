@@ -142,6 +142,7 @@ async def cluster_signal(
     signal_hash: str,
     signal_text: str,
     embedding: list[float],
+    product: str | None = None,
 ) -> ClusterResult:
     """Cluster a signal into an existing or new topic.
 
@@ -150,6 +151,7 @@ async def cluster_signal(
         signal_hash: The signal hash.
         signal_text: The signal text (for new topic title).
         embedding: The signal's embedding vector.
+        product: The product name this signal is about.
 
     Returns:
         ClusterResult with the action taken.
@@ -190,7 +192,7 @@ async def cluster_signal(
             )
 
     # No match or low similarity - create new topic
-    topic_id = await create_topic(client, signal_hash, signal_text, embedding)
+    topic_id = await create_topic(client, signal_hash, signal_text, embedding, product)
     return ClusterResult(
         topic_id=topic_id,
         action="created",
@@ -264,6 +266,7 @@ async def create_topic(
     signal_hash: str,
     signal_text: str,
     embedding: list[float],
+    product: str | None = None,
 ) -> str:
     """Create a new topic from a signal.
 
@@ -272,6 +275,7 @@ async def create_topic(
         signal_hash: The signal hash.
         signal_text: The signal text (used for title).
         embedding: The signal's embedding vector.
+        product: The product name this topic is about.
 
     Returns:
         The new topic ID.
@@ -293,6 +297,7 @@ async def create_topic(
             "title": title,
             "summary": "",
             "status": "open",
+            "product": product or "",
             "signal_count": 1,
             "created_at": now,
             "updated_at": now,
@@ -316,6 +321,7 @@ TOPIC_FIELDS = [
     "title",
     "summary",
     "status",
+    "product",
     "signal_count",
     "created_at",
     "updated_at",

@@ -71,6 +71,9 @@ class EmbedWorker:
             logger.warning("Signal has no text: %s", signal_hash[:16])
             return True
 
+        # Get product for propagation
+        product = signal_data.get("product") or None
+
         # Generate embedding
         try:
             embedding = await self.embedder.embed(text)
@@ -86,6 +89,7 @@ class EmbedWorker:
                 signal_hash,
                 text,
                 embedding,
+                product,
             )
             logger.info(
                 "Clustered signal %s: action=%s, topic=%s, similarity=%.3f",

@@ -58,3 +58,13 @@ uv run uvicorn main:app --reload
 ## Useful Commands for Development
 
 - Flush Redis: `docker exec -it weavehacks-redis redis-cli FLUSHALL`
+- Ingest + scrape:
+```bash
+curl -s -X POST "http://localhost:8000/ingest" \
+  -H "Content-Type: application/json" \
+  -d "$(curl -s -X POST "http://localhost:8000/scrape" \
+    -H "Content-Type: application/json" \
+    -d '{"product_name": "joplin", "subreddit": "joplinapp", "max_posts": 5}')" | jq
+```
+- Topics (clustered signals): `curl http://localhost:8000/topics | jq`
+- Tasks (classified actionable topics): `curl http://localhost:8000/tasks | jq`

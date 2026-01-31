@@ -7,12 +7,16 @@ import os
 import redis.asyncio as redis
 
 from classify import TopicClassifier
+from config import get_repo_for_product
+from github import GitHubClient, format_issue_body, format_issue_title, get_labels_for_task
 from ingest.cluster import get_topic, TOPIC_PREFIX
 from llm import get_llm
 from tasks.storage import (
     create_task,
+    get_task,
     pop_classify_queue,
     get_classify_queue_length,
+    update_task_github_issue,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +56,15 @@ class ClassifyWorker:
             llm = get_llm(os.getenv("LLM_PROVIDER", "openai"))
             self.classifier = TopicClassifier(llm)
 
+        # Initialize GitHub client if token is available
+        self._github_client: GitHubClient | None = None
+        if os.getenv("GITHUB_TOKEN"):
+            try:
+                self._github_client = GitHubClient()
+                logger.info("GitHub integration enabled")
+            except ValueError as e:
+                logger.warning("GitHub integration disabled: %s", e)
+
         self._running = False
         self._task: asyncio.Task | None = None
 
@@ -79,6 +92,9 @@ class ClassifyWorker:
             logger.warning("Topic has no title: %s", topic_id)
             return True
 
+        # Get product for propagation to task
+        product = topic_data.get("product") or None
+
         # Get signals for this topic (for now, just use the title)
         # TODO: Fetch actual signals linked to this topic
         signals = [title]
@@ -96,7 +112,7 @@ class ClassifyWorker:
 
         # Create task if actionable
         if result.is_actionable:
-            task_id = await create_task(self.redis, topic_id, result)
+            task_id = await create_task(self.redis, topic_id, result, product)
             logger.info(
                 "Created task %s for topic %s (category: %s, severity: %s)",
                 task_id,
@@ -104,6 +120,9 @@ class ClassifyWorker:
                 result.category,
                 result.severity,
             )
+
+            # Create GitHub issue if configured
+            await self._create_github_issue(task_id, topic_id, product)
         else:
             logger.info(
                 "Topic %s classified as %s (not actionable)",
@@ -112,6 +131,65 @@ class ClassifyWorker:
             )
 
         return True
+
+    async def _create_github_issue(
+        self,
+        task_id: str,
+        topic_id: str,
+        product: str | None,
+    ) -> None:
+        """Create a GitHub issue for a task if configured.
+
+        Args:
+            task_id: The task ID.
+            topic_id: The topic ID.
+            product: The product name.
+        """
+        if not self._github_client:
+            logger.debug("GitHub integration not configured, skipping issue creation")
+            return
+
+        if not product:
+            logger.debug("No product specified for task %s, skipping issue creation", task_id)
+            return
+
+        # Look up repo for product
+        repo = get_repo_for_product(product)
+        if not repo:
+            logger.warning(
+                "No repo mapping found for product '%s', skipping issue creation",
+                product,
+            )
+            return
+
+        # Get task data for formatting
+        task_data = await get_task(self.redis, task_id)
+        if not task_data:
+            logger.error("Task not found: %s", task_id)
+            return
+
+        try:
+            # Format issue
+            title = format_issue_title(task_data)
+            body = format_issue_body(task_data, topic_id)
+            labels = get_labels_for_task(task_data)
+
+            # Create issue
+            issue = await self._github_client.create_issue(repo, title, body, labels)
+
+            # Update task with issue info
+            await update_task_github_issue(
+                self.redis, task_id, issue.html_url, issue.number
+            )
+
+            logger.info(
+                "Created GitHub issue #%d for task %s: %s",
+                issue.number,
+                task_id,
+                issue.html_url,
+            )
+        except Exception as e:
+            logger.error("Failed to create GitHub issue for task %s: %s", task_id, e)
 
     async def process_batch(self, batch_size: int = BATCH_SIZE) -> int:
         """Process a batch of topics.

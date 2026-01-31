@@ -34,6 +34,7 @@ class WebScraper(BaseScraper):
         url: str,
         extraction_instruction: str,
         max_items: int = 20,
+        product: str | None = None,
     ) -> list[Signal]:
         """Scrape complaints from any URL using AI-powered extraction.
 
@@ -49,7 +50,7 @@ class WebScraper(BaseScraper):
 
         async with AsyncStagehand() as client:
             logger.debug("Stagehand client created, starting session...")
-            session = await client.sessions.start(model_name="openai/gpt-4o-mini")
+            session = await client.sessions.start(model_name="openai/gpt-5-nano")
             logger.info("Session started: %s", session.id)
 
             # Log the Browserbase live view URL for debugging
@@ -110,7 +111,7 @@ class WebScraper(BaseScraper):
                 items = extract_response.data.result.get("items", [])
                 logger.info("Extracted %d items from page", len(items))
 
-                return self._normalize_items(items, url, max_items)
+                return self._normalize_items(items, url, max_items, product)
 
             finally:
                 logger.debug("Ending session...")
@@ -125,7 +126,11 @@ class WebScraper(BaseScraper):
         )
 
     def _normalize_items(
-        self, items: list[dict], base_url: str, max_items: int
+        self,
+        items: list[dict],
+        base_url: str,
+        max_items: int,
+        product: str | None = None,
     ) -> list[Signal]:
         """Convert extracted items to normalized Signal objects."""
         signals = []
@@ -147,6 +152,7 @@ class WebScraper(BaseScraper):
                     timestamp=datetime.now(),  # Could parse item.get("timestamp")
                     title=title,
                     author=item.get("author"),
+                    product=product,
                 )
             )
 

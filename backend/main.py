@@ -18,10 +18,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from config import get_repo_for_product
+from github import (
+    GitHubClient,
+    format_issue_body,
+    format_issue_title,
+    get_labels_for_task,
+)
 from ingest.cluster import get_topic, list_topics
 from ingest.service import BatchIngestResult, IngestService
 from models import Signal, ScrapeConfig
-from tasks import get_task, list_tasks, update_task_status
+from tasks import get_task, list_tasks, update_task_status, update_task_github_issue
 from redis_setup import (
     close_redis,
     get_redis,
@@ -94,6 +101,9 @@ class WebScrapeConfig(BaseModel):
         default="web", description="Name to use for the source field"
     )
     max_items: int = Field(default=20, ge=1, le=100)
+    product_name: str | None = Field(
+        default=None, description="Product name these signals are about"
+    )
 
 
 class TopicResponse(BaseModel):
@@ -177,6 +187,7 @@ async def scrape_web(config: WebScrapeConfig) -> list[Signal]:
             url=config.url,
             extraction_instruction=config.instruction,
             max_items=config.max_items,
+            product=config.product_name,
         )
         logger.info(
             "Web scrape completed successfully, returning %d signals",
@@ -374,6 +385,85 @@ async def update_task(task_id: str, update: TaskStatusUpdate) -> dict:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to update task: {str(e)}",
+        ) from e
+
+
+@app.post("/tasks/{task_id}/create-issue")
+async def create_issue_for_task(task_id: str) -> dict:
+    """Create a GitHub issue for a task.
+
+    This endpoint manually triggers GitHub issue creation for a task.
+    Useful for retrying failed issue creation or creating issues
+    for tasks that were classified before GitHub integration was enabled.
+
+    Args:
+        task_id: The task ID.
+
+    Returns:
+        Updated task with github_issue_url.
+    """
+    try:
+        redis_client = await get_redis()
+        task_data = await get_task(redis_client, task_id)
+
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Check if issue already exists
+        if task_data.get("github_issue_url"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task already has a GitHub issue: {task_data['github_issue_url']}",
+            )
+
+        # Get product and repo
+        product = task_data.get("product")
+        if not product:
+            raise HTTPException(
+                status_code=400,
+                detail="Task has no product specified",
+            )
+
+        repo = get_repo_for_product(product)
+        if not repo:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No repo mapping found for product: {product}",
+            )
+
+        # Create GitHub client
+        try:
+            github_client = GitHubClient()
+        except ValueError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"GitHub not configured: {str(e)}",
+            ) from e
+
+        # Format and create issue
+        topic_id = task_data.get("topic_id")
+        title = format_issue_title(task_data)
+        body = format_issue_body(task_data, topic_id)
+        labels = get_labels_for_task(task_data)
+
+        issue = await github_client.create_issue(repo, title, body, labels)
+
+        # Update task with issue info
+        await update_task_github_issue(
+            redis_client, task_id, issue.html_url, issue.number
+        )
+
+        # Return updated task
+        updated_task = await get_task(redis_client, task_id)
+        return updated_task
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to create GitHub issue: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create GitHub issue: {str(e)}",
         ) from e
 
 
