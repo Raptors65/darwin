@@ -1,10 +1,12 @@
 """FastAPI application for the browser agent."""
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 # Load environment variables from .env file
 load_dotenv(Path(__file__).parent / ".env")
@@ -16,10 +18,58 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from pydantic import BaseModel, Field
-
+from ingest.cluster import get_topic, list_topics
+from ingest.service import BatchIngestResult, IngestService
 from models import Signal, ScrapeConfig
+from redis_setup import (
+    close_redis,
+    get_redis,
+    health_check as redis_health_check,
+    init_redis,
+)
 from scrapers import RedditScraper, WebScraper
+from workers import EmbedWorker
+
+# Global worker reference
+_embed_worker: EmbedWorker | None = None
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Application lifespan for startup/shutdown."""
+    global _embed_worker  # noqa: PLW0603
+
+    # Startup
+    logger.info("Starting up...")
+
+    # Initialize Redis
+    redis_client = await init_redis()
+    logger.info("Redis initialized")
+
+    # Start embed worker
+    _embed_worker = EmbedWorker(redis_client)
+    _embed_worker.start()
+    logger.info("Embed worker started")
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down...")
+
+    if _embed_worker:
+        await _embed_worker.stop()
+        logger.info("Embed worker stopped")
+
+    await close_redis()
+    logger.info("Redis connection closed")
+
+
+app = FastAPI(
+    title="Browser Agent API",
+    description="Scrape user signals from various sources and cluster into issues",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 
 class WebScrapeConfig(BaseModel):
@@ -35,17 +85,32 @@ class WebScrapeConfig(BaseModel):
     max_items: int = Field(default=20, ge=1, le=100)
 
 
-app = FastAPI(
-    title="Browser Agent API",
-    description="Scrape user complaints from various sources using Stagehand",
-    version="0.1.0",
-)
+class TopicResponse(BaseModel):
+    """Response model for topics."""
+
+    id: str
+    title: str
+    summary: str
+    status: str
+    signal_count: int
+    created_at: int
+    updated_at: int
+
+
+# Health endpoints
 
 
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint."""
-    return {"status": "ok"}
+    redis_status = await redis_health_check()
+    return {
+        "status": "ok" if redis_status["status"] == "healthy" else "degraded",
+        "redis": redis_status,
+    }
+
+
+# Scrape endpoints
 
 
 @app.post("/scrape", response_model=list[Signal])
@@ -112,6 +177,88 @@ async def scrape_web(config: WebScrapeConfig) -> list[Signal]:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to scrape web page: {str(e)}",
+        ) from e
+
+
+# Ingest endpoints
+
+
+@app.post("/ingest")
+async def ingest_signals(signals: list[Signal]) -> BatchIngestResult:
+    """Ingest signals into the pipeline.
+
+    Performs deduplication and queues new signals for embedding.
+
+    Args:
+        signals: List of signals to ingest.
+
+    Returns:
+        BatchIngestResult with stats on processed signals.
+    """
+    logger.info("Received ingest request with %d signals", len(signals))
+
+    try:
+        redis_client = await get_redis()
+        service = IngestService(redis_client)
+        result = await service.ingest_batch(signals)
+        return result
+    except Exception as e:
+        logger.exception("Failed to ingest signals: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to ingest signals: {str(e)}",
+        ) from e
+
+
+# Topic endpoints
+
+
+@app.get("/topics")
+async def get_topics(limit: int = 50) -> list[dict]:
+    """Get all topics sorted by signal count.
+
+    Args:
+        limit: Maximum number of topics to return.
+
+    Returns:
+        List of topics with their metadata.
+    """
+    try:
+        redis_client = await get_redis()
+        topics = await list_topics(redis_client, limit=limit)
+        return topics
+    except Exception as e:
+        logger.exception("Failed to get topics: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get topics: {str(e)}",
+        ) from e
+
+
+@app.get("/topics/{topic_id}")
+async def get_topic_by_id(topic_id: str) -> dict:
+    """Get a specific topic by ID.
+
+    Args:
+        topic_id: The topic ID.
+
+    Returns:
+        Topic metadata.
+    """
+    try:
+        redis_client = await get_redis()
+        topic = await get_topic(redis_client, topic_id)
+        if not topic:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        topic["id"] = topic_id
+        return topic
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to get topic: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get topic: {str(e)}",
         ) from e
 
 
