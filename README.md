@@ -1,8 +1,8 @@
-# Beacon
+# Darwin
 
 **Turn user feedback into actionable code changes, automatically.**
 
-Beacon scrapes user signals from Reddit (and other sources), clusters similar feedback into topics, and uses AI to identify actionable items like bugs, feature requests, and UX issues. These get turned into tasks for an autonomous coding agent to resolve.
+Darwin scrapes user signals from Reddit (and other sources), clusters similar feedback into topics, and uses AI to identify actionable items like bugs, feature requests, and UX issues. These get turned into tasks for an autonomous coding agent to resolve.
 
 ## How It Works
 
@@ -71,4 +71,4 @@ curl -s -X POST "http://localhost:8000/ingest" \
 - Create GitHub issue: `curl -X POST http://localhost:8000/tasks/{task_id}/create-issue | jq`
 - Run fix agent: `curl -X POST http://localhost:8000/tasks/{task_id}/fix | jq`
 - Clear PR for specific task ID: `redis-cli HDEL task:8b99797e fix_pr_url fix_status fix_outcome`
-    - also probably need to clear the branch: `git push origin --delete beacon/fix-8b99797e`
+    - also probably need to clear the branch: `git push origin --delete darwin/fix-8b99797e`

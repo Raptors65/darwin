@@ -92,7 +92,7 @@ def format_issue_body(task: dict, topic_id: str | None = None) -> str:
     parts.extend([
         "",
         "---",
-        f"*Created by [Beacon](https://github.com/beacon) | {' | '.join(footer_parts)}*",
+        f"*Created by [Darwin](https://github.com/Raptors65/darwin) | {' | '.join(footer_parts)}*",
     ])
 
     return "\n".join(parts)

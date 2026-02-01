@@ -8,11 +8,17 @@ import re
 
 from redis.asyncio import Redis
 
+from agent import run_feedback_fix_agent, clone_repo, commit_and_push, cleanup_repo
+from config import get_repo_for_product
+from github import GitHubClient
 from learning.rules import create_rule
 from learning.rule_extractor import extract_rules_from_feedback
 from tasks import get_task
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of fix iterations per PR (to avoid infinite loops)
+MAX_FIX_ITERATIONS = 3
 
 
 def verify_signature(payload: bytes, signature: str | None) -> bool:
@@ -45,9 +51,9 @@ def verify_signature(payload: bytes, signature: str | None) -> bool:
 
 
 def extract_task_id_from_pr(pr_data: dict) -> str | None:
-    """Extract Beacon task ID from PR title or body.
+    """Extract Darwin task ID from PR title or body.
     
-    PR titles look like: "[Beacon] Fix issue title"
+    PR titles look like: "[Darwin] Fix issue title"
     PR body contains: "Task ID: abc123"
     
     Args:
@@ -63,9 +69,9 @@ def extract_task_id_from_pr(pr_data: dict) -> str | None:
     if match:
         return match.group(1)
     
-    # Fallback: check branch name (beacon/fix-{task_id})
+    # Fallback: check branch name (darwin/fix-{task_id})
     branch = pr_data.get("head", {}).get("ref", "")
-    branch_match = re.search(r"beacon/fix-([a-f0-9]+)", branch)
+    branch_match = re.search(r"darwin/fix-([a-f0-9]+)", branch)
     if branch_match:
         return branch_match.group(1)
     
@@ -98,10 +104,10 @@ async def handle_pr_event(
     # Extract task ID from PR
     task_id = extract_task_id_from_pr(pr_data)
     if not task_id:
-        logger.debug("PR %s is not a Beacon PR (no task ID found)", pr_number)
-        return {"status": "ignored", "reason": "not a beacon PR"}
+        logger.debug("PR %s is not a Darwin PR (no task ID found)", pr_number)
+        return {"status": "ignored", "reason": "not a darwin PR"}
     
-    logger.info("Beacon PR detected: task_id=%s", task_id)
+    logger.info("Darwin PR detected: task_id=%s", task_id)
     
     # Check if task exists
     task_key = f"task:{task_id}"
@@ -171,7 +177,7 @@ async def handle_review_event(
     
     task_id = extract_task_id_from_pr(pr_data)
     if not task_id:
-        return {"status": "ignored", "reason": "not a beacon PR"}
+        return {"status": "ignored", "reason": "not a darwin PR"}
     
     task_key = f"task:{task_id}"
     exists = await redis_client.exists(task_key)
@@ -195,6 +201,13 @@ async def handle_review_event(
                     reviewer=reviewer,
                     redis_client=redis_client,
                 )
+            
+            # Trigger automatic fix for the feedback
+            await _trigger_feedback_fix(
+                task_id=task_id,
+                pr_data=pr_data,
+                redis_client=redis_client,
+            )
     
     return {"status": "success", "task_id": task_id, "review_state": review_state}
 
@@ -258,6 +271,165 @@ async def _extract_and_store_rules(
         return 0
 
 
+async def _trigger_feedback_fix(
+    task_id: str,
+    pr_data: dict,
+    redis_client: Redis,
+) -> bool:
+    """Trigger the fix agent to address PR review feedback.
+    
+    This function:
+    1. Checks if we haven't exceeded max iterations
+    2. Fetches all comments from the PR
+    3. Clones the repo and checks out the PR branch
+    4. Runs the feedback fix agent
+    5. Commits and pushes the changes
+    
+    Args:
+        task_id: The Darwin task ID.
+        pr_data: The pull request object from the webhook.
+        redis_client: Redis client.
+        
+    Returns:
+        True if fix was triggered and succeeded, False otherwise.
+    """
+    import asyncio
+    
+    task_key = f"task:{task_id}"
+    
+    # Check fix iteration count
+    iteration_count = await redis_client.hget(task_key, "fix_iterations")
+    iteration_count = int(iteration_count) if iteration_count else 0
+    
+    if iteration_count >= MAX_FIX_ITERATIONS:
+        logger.warning(
+            "Task %s has reached max fix iterations (%d), skipping auto-fix",
+            task_id, MAX_FIX_ITERATIONS
+        )
+        return False
+    
+    # Check if a fix is already in progress
+    fix_status = await redis_client.hget(task_key, "fix_status")
+    if fix_status and fix_status.decode() if isinstance(fix_status, bytes) else fix_status == "running":
+        logger.warning("Fix already in progress for task %s, skipping", task_id)
+        return False
+    
+    # Get task data
+    task = await get_task(redis_client, task_id)
+    if not task:
+        logger.error("Task %s not found", task_id)
+        return False
+    
+    product = task.get("product")
+    if not product:
+        logger.warning("Task %s has no product, cannot fix", task_id)
+        return False
+    
+    repo = get_repo_for_product(product)
+    if not repo:
+        logger.warning("No repo mapping for product %s", product)
+        return False
+    
+    # Get PR details
+    pr_number = pr_data.get("number")
+    pr_branch = pr_data.get("head", {}).get("ref", "")
+    
+    if not pr_branch:
+        logger.error("Could not get PR branch for task %s", task_id)
+        return False
+    
+    logger.info(
+        "Triggering feedback fix for task %s (PR #%d, branch: %s, iteration: %d)",
+        task_id, pr_number, pr_branch, iteration_count + 1
+    )
+    
+    # Update status to running
+    await redis_client.hset(task_key, mapping={
+        "fix_status": "running",
+        "fix_iterations": iteration_count + 1,
+    })
+    
+    try:
+        # Initialize GitHub client and fetch comments
+        github_client = GitHubClient()
+        
+        reviews = await github_client.get_pr_reviews(repo, pr_number)
+        inline_comments = await github_client.get_pr_comments(repo, pr_number)
+        
+        # Convert to dicts for the agent
+        reviews_data = [
+            {"body": r.body, "user": r.user, "state": r.state}
+            for r in reviews
+            if r.body  # Only include reviews with comments
+        ]
+        inline_data = [
+            {"body": c.body, "path": c.path, "line": c.line, "user": c.user}
+            for c in inline_comments
+        ]
+        
+        if not reviews_data and not inline_data:
+            logger.info("No review comments to address for task %s", task_id)
+            await redis_client.hset(task_key, "fix_status", "completed")
+            return False
+        
+        logger.info(
+            "Found %d reviews and %d inline comments for task %s",
+            len(reviews_data), len(inline_data), task_id
+        )
+        
+        # Clone the repo and checkout the PR branch
+        clone_result = clone_repo(repo, branch=pr_branch, task_id=f"{task_id}-feedback")
+        
+        if not clone_result.success:
+            logger.error("Failed to clone repo: %s", clone_result.error)
+            await redis_client.hset(task_key, "fix_status", "failed")
+            return False
+        
+        repo_path = clone_result.path
+        
+        try:
+            # Run the feedback fix agent
+            fix_result = await run_feedback_fix_agent(
+                repo_path=repo_path,
+                task=task,
+                reviews=reviews_data,
+                inline_comments=inline_data,
+            )
+            
+            if not fix_result.success:
+                logger.warning(
+                    "Feedback fix agent failed for task %s: %s",
+                    task_id, fix_result.error or fix_result.message
+                )
+                await redis_client.hset(task_key, "fix_status", "failed")
+                return False
+            
+            # Commit and push the changes
+            commit_message = f"fix: address review feedback (iteration {iteration_count + 1})\n\nAutomated fix by Darwin for task {task_id}"
+            
+            if not commit_and_push(repo_path, commit_message, pr_branch):
+                logger.error("Failed to push feedback fixes for task %s", task_id)
+                await redis_client.hset(task_key, "fix_status", "failed")
+                return False
+            
+            logger.info(
+                "Successfully pushed feedback fixes for task %s (files: %s)",
+                task_id, fix_result.files_changed
+            )
+            
+            await redis_client.hset(task_key, "fix_status", "completed")
+            return True
+            
+        finally:
+            # Clean up the cloned repo
+            cleanup_repo(repo_path)
+            
+    except Exception as e:
+        logger.exception("Failed to trigger feedback fix for task %s: %s", task_id, e)
+        await redis_client.hset(task_key, "fix_status", "failed")
+        return False
+
+
 async def store_successful_fix(
     task_id: str,
     pr_data: dict,
@@ -270,7 +442,7 @@ async def store_successful_fix(
     future tasks.
     
     Args:
-        task_id: The Beacon task ID.
+        task_id: The Darwin task ID.
         pr_data: The merged PR data from GitHub.
         redis_client: Redis client.
     """

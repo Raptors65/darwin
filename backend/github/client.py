@@ -20,6 +20,32 @@ class GitHubIssue:
     html_url: str
 
 
+@dataclass
+class PRReviewComment:
+    """A review comment on a pull request (inline code comment)."""
+
+    id: int
+    body: str
+    path: str  # File path the comment is on
+    line: int | None  # Line number (None if outdated)
+    side: str  # "LEFT" or "RIGHT"
+    user: str  # Username of commenter
+    created_at: str
+    html_url: str
+
+
+@dataclass
+class PRReview:
+    """A pull request review."""
+
+    id: int
+    body: str  # Review summary comment
+    state: str  # "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "PENDING"
+    user: str  # Username of reviewer
+    submitted_at: str | None
+    html_url: str
+
+
 class GitHubClient:
     """Client for interacting with the GitHub API."""
 
@@ -92,6 +118,90 @@ class GitHubClient:
 
         logger.info("Created issue #%d: %s", issue.number, issue.html_url)
         return issue
+
+    async def get_pr_reviews(self, repo: str, pr_number: int) -> list[PRReview]:
+        """Fetch all reviews for a pull request.
+
+        Args:
+            repo: Repository in "owner/repo" format.
+            pr_number: Pull request number.
+
+        Returns:
+            List of PRReview objects.
+        """
+        url = f"{GITHUB_API_URL}/repos/{repo}/pulls/{pr_number}/reviews"
+
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+        logger.info("Fetching reviews for %s PR #%d", repo, pr_number)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+
+        reviews = []
+        for review in data:
+            reviews.append(
+                PRReview(
+                    id=review["id"],
+                    body=review.get("body", "") or "",
+                    state=review["state"],
+                    user=review["user"]["login"],
+                    submitted_at=review.get("submitted_at"),
+                    html_url=review["html_url"],
+                )
+            )
+
+        logger.info("Fetched %d reviews for PR #%d", len(reviews), pr_number)
+        return reviews
+
+    async def get_pr_comments(self, repo: str, pr_number: int) -> list[PRReviewComment]:
+        """Fetch all review comments (inline code comments) for a pull request.
+
+        Args:
+            repo: Repository in "owner/repo" format.
+            pr_number: Pull request number.
+
+        Returns:
+            List of PRReviewComment objects with file/line context.
+        """
+        url = f"{GITHUB_API_URL}/repos/{repo}/pulls/{pr_number}/comments"
+
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+        logger.info("Fetching review comments for %s PR #%d", repo, pr_number)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+
+        comments = []
+        for comment in data:
+            comments.append(
+                PRReviewComment(
+                    id=comment["id"],
+                    body=comment["body"],
+                    path=comment["path"],
+                    line=comment.get("line"),  # Can be None for outdated comments
+                    side=comment.get("side", "RIGHT"),
+                    user=comment["user"]["login"],
+                    created_at=comment["created_at"],
+                    html_url=comment["html_url"],
+                )
+            )
+
+        logger.info("Fetched %d review comments for PR #%d", len(comments), pr_number)
+        return comments
 
 
 # Convenience function for quick issue creation

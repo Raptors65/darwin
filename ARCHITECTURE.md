@@ -1,6 +1,6 @@
-# Beacon Architecture
+# Darwin Architecture
 
-This document provides an in-depth overview of Beacon's architecture, explaining how user feedback is transformed into automated code fixes through an AI-powered pipeline.
+This document provides an in-depth overview of Darwin's architecture, explaining how user feedback is transformed into automated code fixes through an AI-powered pipeline.
 
 ## Table of Contents
 
@@ -19,7 +19,7 @@ This document provides an in-depth overview of Beacon's architecture, explaining
 
 ## Overview
 
-Beacon is an autonomous feedback-to-fix pipeline that:
+Darwin is an autonomous feedback-to-fix pipeline that:
 
 1. **Scrapes** user feedback from multiple sources (Reddit, forums, web pages)
 2. **Deduplicates** and normalizes incoming signals
@@ -265,7 +265,7 @@ For actionable tasks, the Claude Agent SDK autonomously fixes the code.
 │                     Fix Pipeline                       │
 │                                                        │
 │  1. Clone target repository (shallow clone)            │
-│  2. Create feature branch: beacon/fix-{task_id}        │
+│  2. Create feature branch: darwin/fix-{task_id}        │
 │  3. Load similar past fixes (vector search)            │
 │  4. Load style rules for product                       │
 │  5. Run Claude Agent with task context                 │
@@ -332,7 +332,7 @@ For actionable tasks, the Claude Agent SDK autonomously fixes the code.
 
 ## Redis Usage
 
-Redis Stack serves as the central nervous system of Beacon, handling:
+Redis Stack serves as the central nervous system of Darwin, handling:
 
 ### 1. Signal Storage (Deduplication)
 
@@ -621,7 +621,7 @@ while self._running:
 # When a topic is classified as actionable
 title = format_issue_title(task_data)  # "[BUG] Sync fails silently"
 body = format_issue_body(task_data, topic_id)
-labels = get_labels_for_task(task_data)  # ["bug", "beacon"]
+labels = get_labels_for_task(task_data)  # ["bug", "darwin"]
 
 issue = await github_client.create_issue(repo, title, body, labels)
 await update_task_github_issue(redis, task_id, issue.html_url, issue.number)
@@ -633,7 +633,7 @@ await update_task_github_issue(redis, task_id, issue.html_url, issue.number)
 pr_data = await create_pr(
     repo=repo,
     branch=branch_name,
-    title=f"[Beacon] {task_title}",
+    title=f"[Darwin] {task_title}",
     body=pr_body,  # Includes task details, files changed
     base=default_branch
 )
@@ -641,7 +641,7 @@ pr_data = await create_pr(
 
 ### GitHub Webhooks (Self-Improvement)
 
-Webhooks capture feedback on Beacon's PRs:
+Webhooks capture feedback on Darwin's PRs:
 
 ```python
 @app.post("/webhooks/github")
@@ -665,7 +665,7 @@ async def github_webhook(request: Request):
 
 ## Self-Improvement Loop
 
-Beacon learns from PR feedback to improve future fixes:
+Darwin learns from PR feedback to improve future fixes:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

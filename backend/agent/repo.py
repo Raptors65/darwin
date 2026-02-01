@@ -68,6 +68,7 @@ def clone_repo(
     repo: str,
     branch: str | None = None,
     task_id: str | None = None,
+    shallow: bool = True,
 ) -> CloneResult:
     """Clone a GitHub repository to a temporary directory.
 
@@ -75,19 +76,21 @@ def clone_repo(
         repo: Repository in "owner/repo" format.
         branch: Branch to clone (auto-detects default branch if None).
         task_id: Optional task ID for directory naming.
+        shallow: If True, use --depth 1 for faster cloning. Set to False when
+                 you need to checkout existing branches or access history.
 
     Returns:
         CloneResult with the path to the cloned repo and the branch used.
     """
     # Auto-detect default branch if not specified
-    if branch is None:
-        branch = get_default_branch(repo)
+    default_branch = get_default_branch(repo)
+    target_branch = branch if branch else default_branch
 
     # Create temp directory
     if task_id:
-        temp_dir = Path(tempfile.gettempdir()) / f"beacon-{task_id}"
+        temp_dir = Path(tempfile.gettempdir()) / f"darwin-{task_id}"
     else:
-        temp_dir = Path(tempfile.mkdtemp(prefix="beacon-"))
+        temp_dir = Path(tempfile.mkdtemp(prefix="darwin-"))
 
     # Clean up if exists
     if temp_dir.exists():
@@ -102,11 +105,17 @@ def clone_repo(
     else:
         clone_url = f"https://github.com/{repo}.git"
 
-    logger.info("Cloning %s (branch: %s) to %s", repo, branch, temp_dir)
+    logger.info("Cloning %s (branch: %s, shallow: %s) to %s", repo, target_branch, shallow, temp_dir)
 
     try:
+        # Build clone command
+        clone_cmd = ["git", "clone"]
+        if shallow:
+            clone_cmd.extend(["--depth", "1"])
+        clone_cmd.extend(["--branch", target_branch, clone_url, str(temp_dir)])
+
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", branch, clone_url, str(temp_dir)],
+            clone_cmd,
             capture_output=True,
             text=True,
             timeout=120,
@@ -114,17 +123,48 @@ def clone_repo(
 
         if result.returncode != 0:
             logger.error("Clone failed: %s", result.stderr)
-            return CloneResult(path=temp_dir, default_branch=branch, success=False, error=result.stderr)
+            return CloneResult(path=temp_dir, default_branch=default_branch, success=False, error=result.stderr)
 
         logger.info("Clone successful")
-        return CloneResult(path=temp_dir, default_branch=branch, success=True)
+        return CloneResult(path=temp_dir, default_branch=default_branch, success=True)
 
     except subprocess.TimeoutExpired:
         logger.error("Clone timed out")
-        return CloneResult(path=temp_dir, default_branch=branch, success=False, error="Clone timed out")
+        return CloneResult(path=temp_dir, default_branch=default_branch, success=False, error="Clone timed out")
     except Exception as e:
         logger.error("Clone failed: %s", e)
-        return CloneResult(path=temp_dir, default_branch=branch, success=False, error=str(e))
+        return CloneResult(path=temp_dir, default_branch=default_branch, success=False, error=str(e))
+
+
+def checkout_branch(repo_path: Path, branch_name: str) -> bool:
+    """Checkout an existing branch.
+
+    Args:
+        repo_path: Path to the repository.
+        branch_name: Name of the branch to checkout.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    logger.info("Checking out existing branch: %s", branch_name)
+
+    try:
+        result = subprocess.run(
+            ["git", "checkout", branch_name],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            logger.error("Checkout branch failed: %s", result.stderr)
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.error("Checkout branch failed: %s", e)
+        return False
 
 
 def create_branch(repo_path: Path, branch_name: str) -> bool:
@@ -179,12 +219,12 @@ def commit_and_push(
     try:
         # Configure git user
         subprocess.run(
-            ["git", "config", "user.email", "beacon@example.com"],
+            ["git", "config", "user.email", "darwin@example.com"],
             cwd=repo_path,
             capture_output=True,
         )
         subprocess.run(
-            ["git", "config", "user.name", "Beacon Bot"],
+            ["git", "config", "user.name", "Darwin Bot"],
             cwd=repo_path,
             capture_output=True,
         )
