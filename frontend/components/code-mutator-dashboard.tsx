@@ -332,9 +332,11 @@ export function CodeMutatorDashboard() {
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-4 border-b border-border">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-foreground flex items-center justify-center">
-            <span className="text-background font-bold text-sm">D</span>
-          </div>
+          <img
+            src="/darwin-logo.png"
+            alt="Darwin"
+            className="w-12 h-8 rounded object-fit"
+          />
           <h1 className="text-lg font-medium tracking-tight">Darwin</h1>
           <span className="text-muted-foreground">·</span>
           <div className="flex items-center gap-2">
@@ -494,9 +496,11 @@ export function CodeMutatorDashboard() {
 
           {/* Version */}
           <div className="p-4 border-t border-border flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-muted flex items-center justify-center">
-              <span className="text-xs font-bold">D</span>
-            </div>
+            <img
+              src="/darwin-logo.png"
+              alt="Darwin"
+              className="w-8 h-6 rounded object-fit"
+            />
             <span className="text-xs text-muted-foreground">Version 1.0</span>
           </div>
         </aside>

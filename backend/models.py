@@ -28,7 +28,7 @@ class Signal(BaseModel):
     """A normalized signal (post/comment) extracted from a source.
 
     Signals are raw scraped data that will be deduplicated, embedded,
-    and clustered into Issues downstream.
+    and clustered into Tasks downstream.
     """
 
     id: str = Field(description="Unique identifier for this signal")
