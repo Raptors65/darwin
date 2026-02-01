@@ -6,6 +6,7 @@ Use this for sources that don't have a JSON API (forums, GitHub, Discourse, etc.
 import hashlib
 import logging
 from datetime import datetime
+from urllib.parse import urljoin, urlparse
 
 from stagehand import AsyncStagehand
 
@@ -81,7 +82,7 @@ class WebScraper(BaseScraper):
                     - title: the main title or heading
                     - body: the content/description text
                     - author: who posted it (if available)
-                    - url: link to the item (if available)
+                    - url: the SPECIFIC link/href to this individual item (post, topic, issue, comment, etc.) - NOT the current page URL. Look for the <a> tag that links to this specific item. This is very important!
                     - timestamp: when it was posted (if available)
                     """,
                     schema={
@@ -138,7 +139,10 @@ class WebScraper(BaseScraper):
         for item in items[:max_items]:
             title = item.get("title", "")
             body = item.get("body", "")
-            url = item.get("url", base_url)
+            raw_url = item.get("url", "")
+            
+            # Resolve the URL - handle relative URLs, empty URLs, etc.
+            url = self._resolve_url(raw_url, base_url)
 
             text = f"{title}\n\n{body}".strip() if body else title
             post_id = self._generate_id(url + title)
@@ -148,7 +152,7 @@ class WebScraper(BaseScraper):
                     id=post_id,
                     text=text,
                     source=self.source_name,
-                    url=url if url.startswith("http") else base_url,
+                    url=url,
                     timestamp=datetime.now(),  # Could parse item.get("timestamp")
                     title=title,
                     author=item.get("author"),
@@ -157,6 +161,29 @@ class WebScraper(BaseScraper):
             )
 
         return signals
+    
+    def _resolve_url(self, url: str, base_url: str) -> str:
+        """Resolve a URL against the base URL.
+        
+        Handles:
+        - Empty URLs -> base_url
+        - Relative URLs (/path, path, ../path) -> resolved against base_url
+        - Absolute URLs (https://...) -> returned as-is
+        - Protocol-relative URLs (//example.com) -> resolved with base protocol
+        """
+        if not url or url.strip() == "":
+            return base_url
+        
+        url = url.strip()
+        
+        # Already a full URL
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        
+        # Use urljoin to handle all relative URL cases
+        resolved = urljoin(base_url, url)
+        logger.debug("Resolved URL '%s' -> '%s' (base: %s)", url, resolved, base_url)
+        return resolved
 
     def _generate_id(self, content: str) -> str:
         """Generate a stable ID from content."""

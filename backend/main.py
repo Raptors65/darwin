@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 # Load environment variables from .env file
@@ -27,6 +28,7 @@ from github import (
 )
 from ingest.cluster import get_topic, list_topics
 from ingest.service import BatchIngestResult, IngestService
+from ingest.dedupe import list_signals
 from models import Signal, ScrapeConfig
 from agent import run_fix_agent, clone_repo, create_branch, commit_and_push, create_pr, cleanup_repo
 from tasks import get_task, list_tasks, update_task_status, update_task_github_issue, update_task_fix
@@ -108,6 +110,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Add CORS middleware for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class WebScrapeConfig(BaseModel):
     """Configuration for generic web scraping via Browserbase."""
@@ -151,6 +162,34 @@ async def health_check() -> dict:
 
 
 # Scrape endpoints
+
+
+@app.get("/scrape/sources")
+async def get_scrape_sources() -> dict:
+    """Get available scrape sources.
+    
+    Returns metadata about which scrape sources are available
+    and what parameters they require.
+    
+    Returns:
+        Dict with list of available sources.
+    """
+    return {
+        "sources": [
+            {
+                "id": "reddit",
+                "name": "Reddit",
+                "requires": ["subreddit"],
+                "placeholder": "Enter subreddit (e.g., joplinapp)",
+            },
+            {
+                "id": "web",
+                "name": "Web URL",
+                "requires": ["url", "instruction"],
+                "placeholder": "Enter URL to scrape",
+            },
+        ]
+    }
 
 
 @app.post("/scrape", response_model=list[Signal])
@@ -248,6 +287,32 @@ async def ingest_signals(signals: list[Signal]) -> BatchIngestResult:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to ingest signals: {str(e)}",
+        ) from e
+
+
+@app.get("/signals")
+async def get_signals(
+    product: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Get persisted signals from Redis.
+
+    Args:
+        product: Optional product name to filter by.
+        limit: Maximum number of signals to return.
+
+    Returns:
+        List of signal dicts sorted by first_seen descending.
+    """
+    try:
+        redis_client = await get_redis()
+        signals = await list_signals(redis_client, product=product, limit=limit)
+        return signals
+    except Exception as e:
+        logger.exception("Failed to get signals: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get signals: {str(e)}",
         ) from e
 
 

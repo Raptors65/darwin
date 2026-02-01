@@ -6,10 +6,18 @@ import os
 
 import redis.asyncio as redis
 
+from agent import run_fix_agent, clone_repo, create_branch, commit_and_push, create_pr
 from classify import TopicClassifier
 from config import get_repo_for_product
 from github import GitHubClient, format_issue_body, format_issue_title, get_labels_for_task
 from ingest.cluster import get_topic, TOPIC_PREFIX
+from learning import (
+    get_top_rules_for_product,
+    format_rules_for_prompt,
+    increment_rule_usage,
+    get_similar_successful_fixes,
+    format_similar_fixes,
+)
 from llm import get_llm
 from tasks.storage import (
     create_task,
@@ -17,6 +25,7 @@ from tasks.storage import (
     pop_classify_queue,
     get_classify_queue_length,
     update_task_github_issue,
+    update_task_fix,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,6 +132,18 @@ class ClassifyWorker:
 
             # Create GitHub issue if configured
             await self._create_github_issue(task_id, topic_id, product)
+            
+            # DEMO ONLY: Auto-trigger fix for tasks containing "Workflowy"
+            # In production, we would always auto-trigger fixes for all tasks.
+            # For demo purposes, we only do this for "Workflowy" because:
+            # 1. We only have time to show 1 PR during the demo
+            # 2. We don't want to burn through all Claude credits
+            if "workflowy" in result.title.lower():
+                logger.info(
+                    "DEMO: Auto-triggering fix for Workflowy task %s",
+                    task_id,
+                )
+                await self._auto_trigger_fix(task_id, product)
         else:
             logger.info(
                 "Topic %s classified as %s (not actionable)",
@@ -190,6 +211,156 @@ class ClassifyWorker:
             )
         except Exception as e:
             logger.error("Failed to create GitHub issue for task %s: %s", task_id, e)
+
+    async def _auto_trigger_fix(
+        self,
+        task_id: str,
+        product: str | None,
+    ) -> None:
+        """Auto-trigger the fix agent for a task.
+
+        DEMO ONLY: In production, we'd always auto-trigger fixes.
+        This is only called for tasks containing "Workflowy" to:
+        1. Only show 1 PR during the demo (limited time)
+        2. Avoid burning through Claude credits
+
+        Args:
+            task_id: The task ID.
+            product: The product name.
+        """
+        if not product:
+            logger.debug("No product specified for task %s, skipping auto-fix", task_id)
+            return
+
+        repo = get_repo_for_product(product)
+        if not repo:
+            logger.warning(
+                "No repo mapping found for product '%s', skipping auto-fix",
+                product,
+            )
+            return
+
+        task_data = await get_task(self.redis, task_id)
+        if not task_data:
+            logger.error("Task not found for auto-fix: %s", task_id)
+            return
+
+        try:
+            # Update status to running
+            await update_task_fix(self.redis, task_id, "running")
+
+            # Clone repository
+            logger.info("Auto-fix: Cloning repo %s for task %s", repo, task_id)
+            clone_result = clone_repo(repo, task_id=task_id)
+
+            if not clone_result.success:
+                await update_task_fix(self.redis, task_id, "failed")
+                logger.error("Auto-fix: Failed to clone repository: %s", clone_result.error)
+                return
+
+            repo_path = clone_result.path
+            branch_name = f"beacon/fix-{task_id}"
+
+            # Create fix branch
+            if not create_branch(repo_path, branch_name):
+                await update_task_fix(self.redis, task_id, "failed")
+                logger.error("Auto-fix: Failed to create branch")
+                return
+
+            # Get similar successful fixes for self-improvement
+            similar_fixes = await get_similar_successful_fixes(task_data, self.redis)
+            similar_fixes_text = format_similar_fixes(similar_fixes)
+            if similar_fixes:
+                logger.info("Auto-fix: Found %d similar successful fixes", len(similar_fixes))
+
+            # Get style rules learned from past reviews
+            style_rules = []
+            style_rules_text = ""
+            if product:
+                style_rules = await get_top_rules_for_product(self.redis, product, limit=10)
+                style_rules_text = format_rules_for_prompt(style_rules)
+                if style_rules:
+                    logger.info("Auto-fix: Found %d style rules for product %s", len(style_rules), product)
+                    for rule in style_rules:
+                        await increment_rule_usage(self.redis, product, rule.get("id", ""))
+
+            # Run the fix agent
+            logger.info("Auto-fix: Running fix agent for task %s", task_id)
+            fix_result = await run_fix_agent(
+                repo_path,
+                task_data,
+                similar_fixes_text,
+                style_rules_text,
+            )
+
+            if not fix_result.success:
+                await update_task_fix(self.redis, task_id, "failed")
+                logger.error("Auto-fix: Fix agent failed: %s", fix_result.error or fix_result.message)
+                return
+
+            # Commit and push
+            title = task_data.get("title", "Fix issue")
+            commit_message = f"fix: {title}\n\nAutomated fix by Beacon for task {task_id}"
+
+            if not commit_and_push(repo_path, commit_message, branch_name):
+                await update_task_fix(self.redis, task_id, "failed")
+                logger.error("Auto-fix: Failed to push changes")
+                return
+
+            # Create PR
+            pr_title = f"[Beacon] {title}"
+
+            # Build issue reference if available
+            issue_number = task_data.get('github_issue_number')
+            issue_url = task_data.get('github_issue_url')
+            if issue_number:
+                issue_ref = f"Fixes #{issue_number}"
+                issue_link = f"- **Related Issue**: [{issue_ref}]({issue_url})"
+            else:
+                issue_ref = ""
+                issue_link = ""
+
+            pr_body = f"""## Automated Fix
+
+This pull request was automatically generated by Beacon.
+{f'{chr(10)}{issue_ref}' if issue_ref else ''}
+
+### Task Details
+- **Category**: {task_data.get('category', 'N/A')}
+- **Summary**: {task_data.get('summary', 'N/A')}
+- **Suggested Action**: {task_data.get('suggested_action', 'N/A')}
+{issue_link}
+
+### Files Changed
+{chr(10).join(f'- `{f}`' for f in fix_result.files_changed)}
+
+---
+*Created by [Beacon](https://github.com/beacon) | Task ID: {task_id}*
+"""
+
+            pr_data = await create_pr(repo, branch_name, pr_title, pr_body, base=clone_result.default_branch)
+
+            if pr_data:
+                await update_task_fix(
+                    self.redis, task_id, "completed",
+                    fix_pr_url=pr_data["html_url"],
+                    fix_branch=branch_name,
+                )
+                logger.info(
+                    "Auto-fix: Created PR for task %s: %s",
+                    task_id,
+                    pr_data["html_url"],
+                )
+            else:
+                await update_task_fix(
+                    self.redis, task_id, "completed",
+                    fix_branch=branch_name,
+                )
+                logger.warning("Auto-fix: Changes pushed but PR creation failed for task %s", task_id)
+
+        except Exception as e:
+            await update_task_fix(self.redis, task_id, "failed")
+            logger.exception("Auto-fix: Failed for task %s: %s", task_id, e)
 
     async def process_batch(self, batch_size: int = BATCH_SIZE) -> int:
         """Process a batch of topics.

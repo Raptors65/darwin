@@ -154,3 +154,52 @@ async def get_embed_queue_length(client: redis.Redis) -> int:
         Queue length.
     """
     return await client.llen(EMBED_QUEUE)
+
+
+async def list_signals(
+    client: redis.Redis,
+    product: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List all signals, optionally filtered by product.
+
+    Args:
+        client: Redis client.
+        product: Optional product name to filter by.
+        limit: Maximum number of signals to return.
+
+    Returns:
+        List of signal dicts sorted by first_seen descending.
+    """
+    signals = []
+    
+    async for key in client.scan_iter(match=f"{SIGNAL_PREFIX}*"):
+        data = await client.hgetall(key)
+        if data:
+            # Extract hash from key
+            signal_hash = key.replace(SIGNAL_PREFIX, "")
+            
+            signal = {
+                "id": signal_hash,
+                "text": data.get("text", ""),
+                "normalized": data.get("normalized", ""),
+                "source": data.get("source", ""),
+                "url": data.get("url", ""),
+                "title": data.get("title", ""),
+                "author": data.get("author", ""),
+                "product": data.get("product", ""),
+                "topic_id": data.get("topic_id", ""),
+                "first_seen": int(data.get("first_seen", 0)),
+                "last_seen": int(data.get("last_seen", 0)),
+            }
+            
+            # Filter by product if specified
+            if product and signal["product"].lower() != product.lower():
+                continue
+            
+            signals.append(signal)
+    
+    # Sort by first_seen descending (newest first)
+    signals.sort(key=lambda x: x["first_seen"], reverse=True)
+    
+    return signals[:limit]

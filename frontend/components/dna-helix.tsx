@@ -255,16 +255,16 @@ export function DNAHelix({ signals = [], onSignalHover, isPaused = false }: DNAH
 
         const isHovered = hoveredSignal === signal.id;
         const isReady = signal.status === "ready";
-        
+
         // Color based on status: yellow for generating, green for ready
-        const dotColor = isReady 
+        const dotColor = isReady
           ? { r: 34, g: 197, b: 94 }   // green-500
           : { r: 234, g: 179, b: 8 };  // yellow-500
 
         // Draw pulsing indicator at attachment point
         const basePulseSize = isHovered ? 14 : 10;
         const pulseSize = basePulseSize + Math.sin(time * 0.1) * 3;
-        
+
         // Outer glow for hovered state
         if (isHovered) {
           const glowGradient = ctx.createRadialGradient(
@@ -287,8 +287,8 @@ export function DNAHelix({ signals = [], onSignalHover, isPaused = false }: DNAH
         // Pulsing ring
         ctx.beginPath();
         ctx.arc(nearestPoint.x, nearestPoint.y, pulseSize, 0, Math.PI * 2);
-        ctx.strokeStyle = isHovered 
-          ? `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, 0.9)` 
+        ctx.strokeStyle = isHovered
+          ? `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, 0.9)`
           : `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, 0.6)`;
         ctx.lineWidth = isHovered ? 3 : 2;
         ctx.stroke();
@@ -296,8 +296,8 @@ export function DNAHelix({ signals = [], onSignalHover, isPaused = false }: DNAH
         // Inner dot
         ctx.beginPath();
         ctx.arc(nearestPoint.x, nearestPoint.y, isHovered ? 6 : 4, 0, Math.PI * 2);
-        ctx.fillStyle = isHovered 
-          ? `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, 1)` 
+        ctx.fillStyle = isHovered
+          ? `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, 1)`
           : `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, 0.9)`;
         ctx.fill();
       });
