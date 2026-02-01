@@ -659,7 +659,41 @@ async def github_webhook(request: Request):
         if review_state == "changes_requested":
             # Extract rules from feedback
             await _extract_and_store_rules(feedback, task_id, ...)
+            # Auto-fix: re-run agent with feedback context
+            await _trigger_feedback_fix(task_id, pr_data, redis)
 ```
+
+### Auto-Fix on Review Feedback
+
+When a reviewer requests changes, Darwin automatically attempts to address the feedback:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                   Feedback Fix Pipeline                          │
+│                                                                  │
+│  1. Webhook receives "changes_requested" review                  │
+│  2. Check iteration count (max 3 attempts)                       │
+│  3. Fetch all review comments + inline code comments             │
+│  4. Clone repo, checkout existing PR branch                      │
+│  5. Run feedback fix agent with comments as context              │
+│  6. Commit and push to same branch (auto-updates PR)             │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Feedback Fix Agent Prompt Includes:**
+
+- Original task context (category, title, summary)
+- All review-level comments with reviewer names
+- Inline code comments with file path and line numbers
+- Instructions to address ALL feedback
+
+**Safeguards:**
+
+| Safeguard | Description |
+|-----------|-------------|
+| Max iterations | Stops after 3 fix attempts per PR |
+| Concurrent fix check | Won't start if a fix is already running |
+| Graceful failure | Logs errors, updates status, continues |
 
 ---
 
@@ -688,14 +722,29 @@ Darwin learns from PR feedback to improve future fixes:
 │      ┌──────────┐     ┌──────────────┐   ┌──────────┐           │
 │      │  Merge   │     │ Webhook:     │   │ Mark as  │           │
 │      │          │     │ Extract rules│   │ rejected │           │
-│      └────┬─────┘     └──────┬───────┘   └──────────┘           │
+│      └────┬─────┘     │ + AUTO-FIX   │   └──────────┘           │
+│           │           └──────┬───────┘                          │
 │           │                  │                                  │
-│           ▼                  ▼                                  │
-│   ┌──────────────┐   ┌──────────────┐                           │
-│   │ Store as     │   │ Create style │                           │
-│   │ successful   │   │ rules for    │                           │
-│   │ fix example  │   │ future use   │                           │
-│   └──────────────┘   └──────────────┘                           │
+│           │           ┌──────┴───────┐                          │
+│           │           ▼              ▼                          │
+│           │    ┌─────────────┐ ┌──────────────┐                 │
+│           │    │ Run feedback│ │ Create style │                 │
+│           │    │ fix agent   │ │ rules for    │                 │
+│           │    │ (up to 3x)  │ │ future use   │                 │
+│           │    └──────┬──────┘ └──────────────┘                 │
+│           │           │                                         │
+│           │           ▼                                         │
+│           │    ┌─────────────┐                                  │
+│           │    │ Push to PR  │──────▶ (back to Human Review)    │
+│           │    │ branch      │                                  │
+│           │    └─────────────┘                                  │
+│           │                                                     │
+│           ▼                                                     │
+│   ┌──────────────┐                                              │
+│   │ Store as     │                                              │
+│   │ successful   │                                              │
+│   │ fix example  │                                              │
+│   └──────────────┘                                              │
 │           │                  │                                  │
 │           └────────┬─────────┘                                  │
 │                    │                                            │
@@ -722,6 +771,13 @@ Darwin learns from PR feedback to improve future fixes:
    - LLM extracts generalizable rules (e.g., "Use early returns")
    - Rules are categorized: style, convention, workflow, constraint
    - Top rules (by usage count) are included in agent prompts
+
+3. **Immediate Feedback Response (Auto-Fix)**
+   - When changes are requested, Darwin immediately attempts to fix
+   - Fetches all review comments and inline code comments from GitHub
+   - Runs a specialized feedback fix agent on the same branch
+   - Pushes updates directly to the PR (up to 3 iterations)
+   - Creates a tighter feedback loop for faster convergence
 
 ### Rule Extraction Prompt
 
@@ -931,20 +987,35 @@ Categories:
                     │         │          │ Requested │         │         │
                     └────┬────┘          └─────┬─────┘         └─────────┘
                          │                     │
-                         ▼                     ▼
-               ┌─────────────────┐   ┌─────────────────┐
-               │ Store Successful│   │ Extract Style   │
-               │ Fix (embedding) │   │ Rules (LLM)     │
-               └────────┬────────┘   └────────┬────────┘
-                        │                     │
-                        ▼                     ▼
-                 fix:success:{id}      rule:{product}:{id}
-                        │                     │
-                        └──────────┬──────────┘
-                                   │
-       ────────────────────────────┼────────────────────────── Self-Improvement ──
-                                   │
-                                   ▼
+                         │              ┌──────┴──────┐
+                         │              ▼             ▼
+                         │      ┌─────────────┐ ┌─────────────────┐
+                         │      │ Auto-Fix    │ │ Extract Style   │
+                         │      │ Feedback    │ │ Rules (LLM)     │
+                         │      │ Agent       │ └────────┬────────┘
+                         │      └──────┬──────┘          │
+                         │             │                 ▼
+                         │             │          rule:{product}:{id}
+                         │             ▼                 │
+                         │      ┌─────────────┐          │
+                         │      │ Push to PR  │──────────┼──▶ (back to Human Review)
+                         │      │ (up to 3x)  │          │
+                         │      └─────────────┘          │
+                         │                               │
+                         ▼                               │
+               ┌─────────────────┐                       │
+               │ Store Successful│                       │
+               │ Fix (embedding) │                       │
+               └────────┬────────┘                       │
+                        │                                │
+                        ▼                                │
+                 fix:success:{id}                        │
+                        │                                │
+                        └────────────────┬───────────────┘
+                                         │
+       ──────────────────────────────────┼──────────────────── Self-Improvement ──
+                                         │
+                                         ▼
                     ┌───────────────────────────────┐
                     │     Future Agent Prompts      │
                     │  - Include similar past fixes │
