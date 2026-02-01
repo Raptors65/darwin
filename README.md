@@ -70,3 +70,5 @@ curl -s -X POST "http://localhost:8000/ingest" \
 - Tasks (classified actionable topics): `curl http://localhost:8000/tasks | jq`
 - Create GitHub issue: `curl -X POST http://localhost:8000/tasks/{task_id}/create-issue | jq`
 - Run fix agent: `curl -X POST http://localhost:8000/tasks/{task_id}/fix | jq`
+- Clear PR for specific task ID: `redis-cli HDEL task:8b99797e fix_pr_url fix_status fix_outcome`
+    - also probably need to clear the branch: `git push origin --delete beacon/fix-8b99797e`

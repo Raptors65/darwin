@@ -88,22 +88,29 @@ FIX_AGENT_PROMPT = """You are a skilled software engineer fixing a bug or implem
 - **Summary**: {summary}
 - **Suggested Action**: {suggested_action}
 
+## Coding Style Rules for {product}
+These rules were learned from past code reviews. Follow them when making changes:
+
+{style_rules}
+
 ## Similar Past Fixes (Learn from these!)
 {similar_fixes}
 
 ## Instructions
 
-1. **Review Past Fixes**: Look at the similar fixes above for patterns and guidance.
-2. **Explore**: Understand the codebase structure. Use Glob and Grep to find relevant files.
-3. **Analyze**: Read the relevant files to understand the current implementation.
-4. **Plan**: Think about the minimal changes needed, learning from what worked before.
-5. **Fix**: Make the necessary code changes using Edit. Keep changes focused and minimal.
-6. **Verify**: Review your changes to ensure they address the issue.
+1. **Follow Style Rules**: Review the coding style rules above and apply them to your changes.
+2. **Review Past Fixes**: Look at similar fixes for patterns and guidance.
+3. **Explore**: Understand the codebase structure. Use Glob and Grep to find relevant files.
+4. **Analyze**: Read the relevant files to understand the current implementation.
+5. **Plan**: Think about the minimal changes needed, following style rules and patterns.
+6. **Fix**: Make the necessary code changes using Edit. Keep changes focused and minimal.
+7. **Verify**: Review your changes to ensure they address the issue and follow the rules.
 
 ## Guidelines
 
 - Make minimal, targeted changes
 - Follow the existing code style and conventions
+- Follow the style rules listed above - they come from real code reviews!
 - Add comments if the fix is non-obvious
 - Do NOT run tests or commit - just make the file changes
 - If you're unsure about something, err on the side of making a smaller change
@@ -128,6 +135,7 @@ async def run_fix_agent(
     repo_path: Path,
     task: dict,
     similar_fixes_text: str = "",
+    style_rules_text: str = "",
 ) -> FixResult:
     """Run the Claude Agent to fix an issue in a repository.
 
@@ -135,6 +143,7 @@ async def run_fix_agent(
         repo_path: Path to the cloned repository.
         task: Task data dictionary with category, title, summary, suggested_action.
         similar_fixes_text: Pre-formatted text of similar successful fixes.
+        style_rules_text: Pre-formatted text of style rules for this product.
 
     Returns:
         FixResult with the outcome.
@@ -143,16 +152,23 @@ async def run_fix_agent(
     title = task.get("title", "")
     summary = task.get("summary", "")
     suggested_action = task.get("suggested_action", "")
+    product = task.get("product", "this project")
 
     # Use provided similar fixes or default message
     if not similar_fixes_text:
         similar_fixes_text = "No similar past fixes found yet. You're pioneering new territory!"
+    
+    # Use provided style rules or default message
+    if not style_rules_text:
+        style_rules_text = "No style rules learned yet for this product."
 
     prompt = FIX_AGENT_PROMPT.format(
         category=category,
         title=title,
         summary=summary,
         suggested_action=suggested_action,
+        product=product,
+        style_rules=style_rules_text,
         similar_fixes=similar_fixes_text,
     )
 

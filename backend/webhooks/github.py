@@ -8,6 +8,10 @@ import re
 
 from redis.asyncio import Redis
 
+from learning.rules import create_rule
+from learning.rule_extractor import extract_rules_from_feedback
+from tasks import get_task
+
 logger = logging.getLogger(__name__)
 
 
@@ -182,10 +186,76 @@ async def handle_review_event(
         elif review_state == "changes_requested":
             logger.info("Changes requested by %s for task %s: %s", 
                        reviewer, task_id, review_body[:200])
-            # Store feedback for learning (future enhancement)
-            # This could be used to improve prompts
+            
+            # Extract and store rules from feedback
+            if review_body and len(review_body.strip()) >= 10:
+                await _extract_and_store_rules(
+                    feedback=review_body,
+                    task_id=task_id,
+                    reviewer=reviewer,
+                    redis_client=redis_client,
+                )
     
     return {"status": "success", "task_id": task_id, "review_state": review_state}
+
+
+async def _extract_and_store_rules(
+    feedback: str,
+    task_id: str,
+    reviewer: str,
+    redis_client: Redis,
+) -> int:
+    """Extract rules from feedback and store them.
+    
+    Args:
+        feedback: The review feedback text.
+        task_id: The task ID for context.
+        reviewer: The reviewer username.
+        redis_client: Redis client.
+        
+    Returns:
+        Number of rules created.
+    """
+    try:
+        # Get task to find product
+        task = await get_task(redis_client, task_id)
+        if not task:
+            logger.warning("Task %s not found for rule extraction", task_id)
+            return 0
+        
+        product = task.get("product")
+        if not product:
+            logger.warning("Task %s has no product for rule extraction", task_id)
+            return 0
+        
+        # Extract rules using LLM
+        rules = await extract_rules_from_feedback(feedback, task)
+        
+        if not rules:
+            logger.debug("No rules extracted from feedback for task %s", task_id)
+            return 0
+        
+        # Store each rule
+        created_count = 0
+        for rule in rules:
+            await create_rule(
+                redis_client=redis_client,
+                product=product,
+                content=rule["content"],
+                category=rule["category"],
+                source="review_feedback",
+                source_task_id=task_id,
+                reviewer=reviewer,
+            )
+            created_count += 1
+        
+        logger.info("Created %d rules from review feedback for product %s", 
+                   created_count, product)
+        return created_count
+        
+    except Exception as e:
+        logger.error("Failed to extract/store rules: %s", e)
+        return 0
 
 
 async def store_successful_fix(
